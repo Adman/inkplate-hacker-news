@@ -69,8 +69,3 @@ Layout (margins, title rule position, summary band, line spacing) is controlled 
 - If HN repeatedly fails after **15** attempts, the device shows an error headline and sleeps on the Wi‑Fi retry timer.
 - E‑paper will **refresh twice** when a summary is fetched: once for **“Generating summary…”**, once for the final text.
 
-## License
-
-This project is released under the **MIT License** — see [`LICENSE`](LICENSE).
-
-Copyright © 2026 Adrián Matejov.
