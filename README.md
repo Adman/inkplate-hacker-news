@@ -31,7 +31,7 @@ Install these libraries (**Library Manager** or vendor instructions):
 
 ESP32‑Arduino core supplies `HTTPClient`, `WiFi`, `WiFiClientSecure`, and sleep APIs.
 
-Open the sketch: **`hn/hn.ino`**.
+Open **`hn/hn.ino`**.
 
 ## Configuration
 

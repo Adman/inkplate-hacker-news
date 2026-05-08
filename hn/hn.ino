@@ -4,7 +4,11 @@
  * Uses https://hacker-news.firebaseio.com/v0/ (see Hacker News API README).
  * Flow: load /v0/topstories.json, fetch items until maxItemLookups, keep type
  * "story" with time in [now-86400, now], pick highest score; summarize its URL via
- * NVIDIA integrate chat completions (streaming JSON deltas).
+ * NVIDIA integrate chat completions (non-streaming JSON).
+ *
+ * Code layout:
+ * - hn_top_story.* — Hacker News Firebase JSON / best story picker
+ * - summary_client.* — HTTPS chat-completion client for summaries
  *
  * Requirements:
  * - Board: Soldered Inkplate 5
@@ -29,17 +33,14 @@
 static const char kNvidiaChatUrl[] = "https://integrate.api.nvidia.com/v1/chat/completions";
 static const char kNvidiaModel[] = "abacusai/dracarys-llama-3.1-70b-instruct";  // Model name
 
+#include "hn_top_story.h"
+#include "summary_client.h"
+
 #include "Inkplate.h"
 #include "Fonts/FreeMonoBold18pt7b.h"
 #include "Fonts/FreeSans18pt7b.h"
 
-#include <ArduinoJson.h>
 #include <HNParser.h>
-#include <HTTPClient.h>
-#include <WiFi.h>
-#include <WiFiClientSecure.h>
-#include "driver/rtc_io.h"
-
 #include <esp_sleep.h>
 #include <string.h>
 #include <time.h>
@@ -88,39 +89,10 @@ static const int16_t kMetaRuleAboveBaselinePx = 35;
 Inkplate display(INKPLATE_1BIT);
 HNParser hnParser;
 
-/*
- * Keep large JSON/stream buffers in BSS, not on loopTask’s stack. Deep call stacks
- * (TLS + HTTP + ArduinoJson + our locals) otherwise trip the stack canary.
- */
-#if ARDUINOJSON_VERSION_MAJOR >= 7
-static JsonDocument s_hnIdListDoc;
-static JsonDocument s_hnItemDoc;
-static JsonDocument s_summaryReqDoc;
-static JsonDocument s_summaryRespDoc;
-#else
-static DynamicJsonDocument s_hnIdListDoc(16384);
-static DynamicJsonDocument s_hnItemDoc(12288);
-static StaticJsonDocument<3072> s_summaryReqDoc;
-/** Full chat-completion JSON (non-streaming); needs room for wrappers + ~512-token reply text. */
-static StaticJsonDocument<8192> s_summaryRespDoc;
-#endif
-
-/** Holds HTTPS JSON response body from summarize request (non-streaming API). */
-static char s_summaryRespBuf[6144];
-static char s_summaryPayload[2304];
-static char s_summaryUserMsg[896];
-static char s_summaryAuthHdr[288];
-static WiFiClientSecure s_summaryTls;
-static HTTPClient s_summaryHttp;
-
-/** Scratch for best-story scan (keeps fetchTopStoryLast24h stack shallow when called from setup). */
-static char s_hnBestTitleBuf[384];
-static char s_hnBestUrlBuf[512];
 /** Word-wrap buffer for proportional summary font (GNU FreeSans 18pt); must fit widest line in pixels/trial. */
 static char s_drawGfxLineBuf[256];
 
 static void syncUtcClock();
-static bool fetchWebpageSummary(const char *pageUrl, char *out, size_t outCap);
 static void drawGfxFontWrapped(Inkplate &disp, int16_t x0, int16_t yTop, int16_t x1, int16_t yBaselineMax,
                                const char *text, const GFXfont *font, int16_t lineSpacingExtraPx);
 static void drawMainView(Inkplate &disp, const char *title, const char *meta, const char *summaryBody,
@@ -306,212 +278,6 @@ static int16_t yBelowWrappedTitle(int16_t tx0, int16_t ty0, int16_t tx1, int16_t
     yRule = dh - 2;
   }
   return yRule;
-}
-
-/**
- * From /v0/topstories.json, fetch at most maxItemLookups items; among type "story" with
- * time in [now-86400, now], choose the highest score. Requires NTP (or other) Unix time.
- */
-static bool fetchTopStoryLast24h(HNParser &hn, char *title, size_t titleCap, char *meta,
-                                size_t metaCap, char *storyUrl, size_t storyUrlCap, int *outScore,
-                                uint32_t *outTime, unsigned maxItemLookups) {
-  const time_t now = time(nullptr);
-  if (now < 86400) {
-    return false;
-  }
-  const time_t windowStart = now - 86400;
-
-  s_hnIdListDoc.clear();
-  s_hnItemDoc.clear();
-
-  if (!hn.getTopStories(s_hnIdListDoc)) {
-    return false;
-  }
-
-  JsonArray ids = s_hnIdListDoc.as<JsonArray>();
-  if (ids.isNull() || ids.size() == 0) {
-    return false;
-  }
-
-  int bestScore = -1;
-  s_hnBestTitleBuf[0] = '\0';
-  s_hnBestUrlBuf[0] = '\0';
-  uint32_t bestTime = 0;
-
-  const size_t n = ids.size();
-  const unsigned limit = (maxItemLookups < n) ? maxItemLookups : static_cast<unsigned>(n);
-
-  for (unsigned i = 0; i < limit; i++) {
-    const int id = ids[i].as<int>();
-    if (!hn.getItem(id, s_hnItemDoc)) {
-      continue;
-    }
-    if (s_hnItemDoc["deleted"].as<bool>() || s_hnItemDoc["dead"].as<bool>()) {
-      continue;
-    }
-    const char *type = s_hnItemDoc["type"];
-    if (!type || strcmp(type, "story") != 0) {
-      continue;
-    }
-    const uint32_t t = s_hnItemDoc["time"].as<uint32_t>();
-    if (t < static_cast<uint32_t>(windowStart) || t > static_cast<uint32_t>(now)) {
-      continue;
-    }
-    const int score = s_hnItemDoc["score"] | 0;
-    if (score <= bestScore) {
-      continue;
-    }
-    const char *tit = s_hnItemDoc["title"];
-    if (!tit || tit[0] == '\0') {
-      continue;
-    }
-    bestScore = score;
-    strncpy(s_hnBestTitleBuf, tit, sizeof(s_hnBestTitleBuf) - 1);
-    s_hnBestTitleBuf[sizeof(s_hnBestTitleBuf) - 1] = '\0';
-    const char *storyHref = s_hnItemDoc["url"];
-    if (storyHref && storyHref[0]) {
-      strncpy(s_hnBestUrlBuf, storyHref, sizeof(s_hnBestUrlBuf) - 1);
-      s_hnBestUrlBuf[sizeof(s_hnBestUrlBuf) - 1] = '\0';
-    } else {
-      snprintf(s_hnBestUrlBuf, sizeof(s_hnBestUrlBuf), "https://news.ycombinator.com/item?id=%d", id);
-    }
-    bestTime = t;
-  }
-
-  if (bestScore < 0 || s_hnBestTitleBuf[0] == '\0') {
-    return false;
-  }
-
-  strncpy(title, s_hnBestTitleBuf, titleCap - 1);
-  title[titleCap - 1] = '\0';
-
-  if (storyUrl && storyUrlCap > 0) {
-    strncpy(storyUrl, s_hnBestUrlBuf, storyUrlCap - 1);
-    storyUrl[storyUrlCap - 1] = '\0';
-  }
-
-  char timeBuf[40];
-  struct tm tmUtc {};
-  const time_t submittedUtc = static_cast<time_t>(bestTime);
-  if (gmtime_r(&submittedUtc, &tmUtc) != nullptr) {
-    strftime(timeBuf, sizeof(timeBuf), "%Y-%m-%d %H:%M UTC", &tmUtc);
-  } else {
-    strncpy(timeBuf, "?", sizeof(timeBuf) - 1);
-    timeBuf[sizeof(timeBuf) - 1] = '\0';
-  }
-
-  snprintf(meta, metaCap, "%d pts | %s", bestScore, timeBuf);
-
-  *outScore = bestScore;
-  *outTime = bestTime;
-  return true;
-}
-
-static bool fetchWebpageSummary(const char *pageUrl, char *out, size_t outCap) {
-  if (!pageUrl || pageUrl[0] == '\0' || outCap < 8) {
-    return false;
-  }
-  out[0] = '\0';
-
-  /*
-   * ESP32 Arduino HTTPClient::setTimeout takes uint16_t ms (max ~65535). Values like 120000 wrap.
-   * Chunked streaming responses also tend to hit READ_TIMEOUT (-11); use one-shot JSON instead.
-   */
-  WiFi.setSleep(false);
-
-  snprintf(s_summaryUserMsg, sizeof(s_summaryUserMsg),
-           "Summarize the following webpage in 500 characters maximum: %s", pageUrl);
-
-  s_summaryReqDoc.clear();
-  s_summaryReqDoc["model"] = kNvidiaModel;
-  s_summaryReqDoc["messages"][0]["role"] = "user";
-  s_summaryReqDoc["messages"][0]["content"] = s_summaryUserMsg;
-  s_summaryReqDoc["temperature"] = 1;
-  s_summaryReqDoc["top_p"] = 0.95;
-  s_summaryReqDoc["max_tokens"] = 512;
-  s_summaryReqDoc["chat_template_kwargs"]["thinking"] = false;
-  s_summaryReqDoc["stream"] = false;
-
-  const size_t plen = serializeJson(s_summaryReqDoc, s_summaryPayload, sizeof(s_summaryPayload));
-  if (plen == 0 || plen >= sizeof(s_summaryPayload)) {
-    return false;
-  }
-
-  s_summaryTls.setInsecure();
-  s_summaryTls.setHandshakeTimeout(120); // seconds (slow LTE/WiFi TLS handshakes)
-
-  s_summaryHttp.setReuse(false);
-  s_summaryHttp.setTimeout(static_cast<uint16_t>(65535));
-  if (!s_summaryHttp.begin(s_summaryTls, kNvidiaChatUrl)) {
-    return false;
-  }
-
-  snprintf(s_summaryAuthHdr, sizeof(s_summaryAuthHdr), "Bearer %s", kNvidiaApiKey);
-  s_summaryHttp.addHeader("Authorization", s_summaryAuthHdr);
-  s_summaryHttp.addHeader("Content-Type", "application/json");
-
-  const int httpCode = s_summaryHttp.POST(s_summaryPayload);
-  if (httpCode != HTTP_CODE_OK) {
-    Serial.print(F("Summary HTTP "));
-    Serial.print(httpCode);
-    if (httpCode == HTTPC_ERROR_READ_TIMEOUT) {
-      Serial.print(F(" READ_TIMEOUT"));
-    }
-    Serial.println();
-    s_summaryHttp.end();
-    return false;
-  }
-
-  WiFiClient *stream = s_summaryHttp.getStreamPtr();
-  size_t bodyLen = 0;
-  const unsigned long bodyStartMs = millis();
-  while (s_summaryHttp.connected() || stream->available()) {
-    while (stream->available() && bodyLen + 1 < sizeof(s_summaryRespBuf)) {
-      const int n =
-          stream->readBytes(&s_summaryRespBuf[bodyLen], sizeof(s_summaryRespBuf) - 1 - bodyLen);
-      if (n <= 0) {
-        break;
-      }
-      bodyLen += static_cast<size_t>(n);
-    }
-    if (!s_summaryHttp.connected() && !stream->available()) {
-      break;
-    }
-    if (millis() - bodyStartMs > 65000) {
-      Serial.println(F("Summary HTTP body read stalled"));
-      break;
-    }
-    delay(1);
-  }
-  s_summaryRespBuf[bodyLen] = '\0';
-
-  s_summaryHttp.end();
-
-  s_summaryRespDoc.clear();
-  if (deserializeJson(s_summaryRespDoc, s_summaryRespBuf)) {
-    Serial.println(F("Summary JSON parse failed"));
-    return false;
-  }
-
-  JsonArray choices = s_summaryRespDoc["choices"].as<JsonArray>();
-  if (choices.isNull() || choices.size() == 0) {
-    return false;
-  }
-
-  const char *msg = choices[0]["message"]["content"];
-  if (!msg || msg[0] == '\0') {
-    return false;
-  }
-
-  strncpy(out, msg, outCap - 1);
-  out[outCap - 1] = '\0';
-
-  size_t tail = strlen(out);
-  while (tail > 0 && (out[tail - 1] == '\n' || out[tail - 1] == '\r' || out[tail - 1] == ' ')) {
-    out[--tail] = '\0';
-  }
-
-  return out[0] != '\0';
 }
 
 static bool gfxLineFitsWindow(Inkplate &disp, int16_t anchorX, int16_t baselineY, int16_t rightEdgeExclusive,
@@ -804,7 +570,8 @@ void setup() {
     drawMainView(display, title, meta, kSummaryPendingMsg, true);
     display.display();
 
-    if (!fetchWebpageSummary(storyUrl, summary, sizeof(summary))) {
+    if (!fetchWebpageSummary(kNvidiaChatUrl, kNvidiaApiKey, kNvidiaModel, storyUrl, summary,
+                             sizeof(summary))) {
       strncpy(summary, "(Summary unavailable.)", sizeof(summary) - 1);
       summary[sizeof(summary) - 1] = '\0';
     }
