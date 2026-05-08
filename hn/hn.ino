@@ -18,15 +18,16 @@
 #error "Select Soldered Inkplate5 in the boards menu."
 #endif
 
-// ---------- WiFi (edit) ----------
-char ssid[] = "wifi-ssid";
-char pass[] = "wifi-password";
+#if __has_include("secrets.h")
+#  include "secrets.h"
+#else
+#  include "secrets.example.h"
+#  warning "secrets.h missing — copy secrets.example.h to secrets.h with your Wi-Fi/NVIDIA secrets."
+#endif
 
-/** NVIDIA NIM chat completions (summaries). Rotate key if exposed; same value as nvidia.sh. */
+/** NVIDIA NIM chat completions (summaries). */
 static const char kNvidiaChatUrl[] = "https://integrate.api.nvidia.com/v1/chat/completions";
-static const char kNvidiaApiKey[] = "nvidia-api-key";
 static const char kNvidiaModel[] = "abacusai/dracarys-llama-3.1-70b-instruct";  // Model name
-// -------------------------------
 
 #include "Inkplate.h"
 #include "Fonts/FreeMonoBold18pt7b.h"

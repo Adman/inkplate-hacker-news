@@ -35,14 +35,30 @@ Open the sketch: **`hn/hn.ino`**.
 
 ## Configuration
 
-Edit the top of `hn/hn.ino`:
+### Secrets (`Wi‑Fi` + NVIDIA API key)
 
-1. **`ssid`** / **`pass`** — Wi‑Fi credentials (`WIFI_TIMEOUT` defaults to 30 s; override with `-DWIFI_TIMEOUT=…` if needed).
-2. **`kNvidiaChatUrl`** — NVIDIA chat completions endpoint (default: Integrate **`/v1/chat/completions`**).
-3. **`kNvidiaApiKey`** — **Bearer** API key for that service.
-4. **`kNvidiaModel`** — model slug accepted by Integrate.
+Sensitive values live in **`hn/secrets.h`**, which is **git‑ignored**.
 
-**Security:** the sketch ships with credentials inlined for convenience during development. For any shared or production repo, prefer **secrets outside source** (ignored header, `--build-property`, CI secrets, etc.) and **rotate** keys if they were ever pushed or bundled in a firmware binary you do not fully control.
+1. Copy the template:
+
+   ```bash
+   cp hn/secrets.example.h hn/secrets.h
+   ```
+
+2. Edit **`hn/secrets.h`** and set **`ssid`**, **`pass`**, and **`kNvidiaApiKey`**.
+
+If `secrets.h` is absent, **`hn/secrets.example.h`** is compiled instead (with placeholders) so the sketch still builds; the firmware will **not work** until your real **`secrets.h`** is present.
+
+See also `WIFI_TIMEOUT` (defaults to **30 s** in `hn/hn.ino`; override with `-DWIFI_TIMEOUT=…` when building).
+
+### Other options (inside `hn/hn.ino`)
+
+Non-secret Integrate defaults stay in the sketch:
+
+1. **`kNvidiaChatUrl`** — NVIDIA chat completions endpoint (**`/v1/chat/completions`** on Integrate by default).
+2. **`kNvidiaModel`** — model slug accepted by that endpoint.
+
+Treat **`secrets.h`** and built firmware binaries as **secrets**: do not publish them, rotate API keys after any leak, and keep **`hn/secrets.h`** out of commits (see `.gitignore`).
 
 ## Tunables (behavior)
 
@@ -68,4 +84,5 @@ Layout (margins, title rule position, summary band, line spacing) is controlled 
 - **Serial** at **115200** logs HN retries and summary HTTP issues.
 - If HN repeatedly fails after **15** attempts, the device shows an error headline and sleeps on the Wi‑Fi retry timer.
 - E‑paper will **refresh twice** when a summary is fetched: once for **“Generating summary…”**, once for the final text.
+- If you see **`#warning`** about **`secrets.h`**, copy **`secrets.example.h`** → **`secrets.h`** and fill in credentials.
 
