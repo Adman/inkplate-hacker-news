@@ -3,17 +3,17 @@
  *
  * Uses https://hacker-news.firebaseio.com/v0/ (see Hacker News API README).
  * Flow: load /v0/topstories.json, fetch items until maxItemLookups, keep type
- * "story" with time in [now-86400, now], pick highest score; summarize its URL via
- * NVIDIA integrate chat completions (non-streaming JSON).
+ * "story" with time in [now-86400, now], pick highest score; summarize its URL with
+ * a Cursor Cloud Agent, which fetches the page itself.
  *
  * Code layout:
  * - hn_top_story.* — Hacker News Firebase JSON / best story picker
- * - summary_client.* — HTTPS chat-completion client for summaries
+ * - summary_client.* — Cursor Cloud Agent prompt for summaries
  *
  * Requirements:
  * - Board: Soldered Inkplate 5
  * - Libraries: Inkplate Arduino, ArduinoJson (6.x or 7.x), HNParser (arduino-hn-parser),
- *   ESP32 HTTPClient / WiFiClientSecure
+ *   CursorAgent (arduino-cursor-agent), ESP32 HTTPClient / WiFiClientSecure
  *
  * Docs: https://docs.soldered.com/inkplate
  */
@@ -26,12 +26,11 @@
 #  include "secrets.h"
 #else
 #  include "secrets.example.h"
-#  warning "secrets.h missing — copy secrets.example.h to secrets.h with your Wi-Fi/NVIDIA secrets."
+#  warning "secrets.h missing — copy secrets.example.h to secrets.h with your Wi-Fi/Cursor secrets."
 #endif
 
-/** NVIDIA NIM chat completions (summaries). */
-static const char kNvidiaChatUrl[] = "https://integrate.api.nvidia.com/v1/chat/completions";
-static const char kNvidiaModel[] = "abacusai/dracarys-llama-3.1-70b-instruct";  // Model name
+/** Cursor Cloud Agent model for summaries (id from GET https://api.cursor.com/v1/models). */
+static const char kCursorModel[] = "claude-sonnet-5-5";
 
 #include "hn_top_story.h"
 #include "summary_client.h"
@@ -81,7 +80,7 @@ static const int16_t kSummaryTopGapPx = 8;
 static const int16_t kSummaryAboveMetaPx = 54;
 /** Extra pixels between summary line baselines (added to GFX font yAdvance). */
 static const int16_t kSummaryLineSpacingExtraPx = 5;
-/** Shown in the summary area while the LLM request is in flight. */
+/** Shown in the summary area while the summary agent is running. */
 static const char kSummaryPendingMsg[] = "Generating summary...";
 /** Horizontal rule above metadata (same width as title rule); pixels above meta baseline. */
 static const int16_t kMetaRuleAboveBaselinePx = 35;
@@ -570,8 +569,7 @@ void setup() {
     drawMainView(display, title, meta, kSummaryPendingMsg, true);
     display.display();
 
-    if (!fetchWebpageSummary(kNvidiaChatUrl, kNvidiaApiKey, kNvidiaModel, storyUrl, summary,
-                             sizeof(summary))) {
+    if (!fetchWebpageSummary(kCursorApiKey, kCursorModel, storyUrl, summary, sizeof(summary))) {
       strncpy(summary, "(Summary unavailable.)", sizeof(summary) - 1);
       summary[sizeof(summary) - 1] = '\0';
     }
