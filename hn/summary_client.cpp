@@ -20,7 +20,7 @@ bool fetchWebpageSummary(const char *api_key, const char *model, const char *pag
 
   const int n = snprintf(s_summaryPrompt, sizeof(s_summaryPrompt),
                          "Read the web page at %s (use your web fetch tool, or curl if that fails). "
-                         "Then reply with a summary of the page in 500 characters maximum, as plain "
+                         "Then reply with a summary of the page in 380 characters maximum, as plain "
                          "text: no markdown, no quotes, no preamble. Do not create or modify any files.",
                          page_url);
   if (n <= 0 || static_cast<size_t>(n) >= sizeof(s_summaryPrompt)) {
