@@ -71,7 +71,7 @@ static const int16_t kTopBreathingRoomPx = 16;
 static const int16_t kTitleInsetX = 18;
 static const uint16_t kTitleLineSpacingPx = 36;
 /** Passed to drawTextBox only; drives conservative chars/line (actual face is FreeMonoBold18pt7b). */
-static const uint16_t kTitleCharsWidthArg = 36;
+static const uint16_t kTitleCharsWidthArg = 28;
 /** Nudge the horizontal rule under the title upward (smaller gap than model vs drawTextBox). */
 static const int16_t kTitleRuleLiftPx = 12;
 
