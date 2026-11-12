@@ -32,6 +32,9 @@
 /** Cursor Cloud Agent model for summaries (id from GET https://api.cursor.com/v1/models). */
 static const char kCursorModel[] = "claude-sonnet-5-5";
 
+/** Reuse the previous summary when the top story's HN id is unchanged since the last wake. */
+static constexpr bool kCacheSummaries = true;
+
 #include "hn_top_story.h"
 #include "summary_client.h"
 
@@ -87,6 +90,10 @@ static const int16_t kMetaRuleAboveBaselinePx = 35;
 
 Inkplate display(INKPLATE_1BIT);
 HNParser hnParser;
+
+/** Last successful summary, kept in RTC memory across deep sleep (cleared on power loss/reset). 0 = empty. */
+RTC_DATA_ATTR static uint32_t s_cachedStoryId = 0;
+RTC_DATA_ATTR static char s_cachedSummary[576];
 
 /** Word-wrap buffer for proportional summary font (GNU FreeSans 18pt); must fit widest line in pixels/trial. */
 static char s_drawGfxLineBuf[256];
@@ -540,11 +547,12 @@ void setup() {
 
   int score = -1;
   uint32_t submitted = 0;
+  uint32_t storyId = 0;
 
   unsigned attempts = 0;
   bool hnOk = false;
   while (!fetchTopStoryLast24h(hnParser, title, sizeof(title), meta, sizeof(meta), storyUrl,
-                               sizeof(storyUrl), &score, &submitted, 50)) {
+                               sizeof(storyUrl), &score, &submitted, &storyId, 50)) {
     Serial.print(F("HN fetch retry "));
     Serial.println(attempts);
     delay(1500);
@@ -562,14 +570,24 @@ void setup() {
     hnOk = true;
   }
 
-  char summary[576];
+  char summary[sizeof(s_cachedSummary)];
   summary[0] = '\0';
 
-  if (hnOk) {
+  if (kCacheSummaries && hnOk && storyId != 0 && storyId == s_cachedStoryId &&
+      s_cachedSummary[0] != '\0') {
+    Serial.println(F("Reusing cached summary"));
+    memcpy(summary, s_cachedSummary, sizeof(summary));
+    summary[sizeof(summary) - 1] = '\0';
+  } else if (hnOk) {
     drawMainView(display, title, meta, kSummaryPendingMsg, true);
     display.display();
 
-    if (!fetchWebpageSummary(kCursorApiKey, kCursorModel, storyUrl, summary, sizeof(summary))) {
+    if (fetchWebpageSummary(kCursorApiKey, kCursorModel, storyUrl, summary, sizeof(summary))) {
+      if (kCacheSummaries) {
+        memcpy(s_cachedSummary, summary, sizeof(s_cachedSummary));
+        s_cachedStoryId = storyId;
+      }
+    } else {
       strncpy(summary, "(Summary unavailable.)", sizeof(summary) - 1);
       summary[sizeof(summary) - 1] = '\0';
     }

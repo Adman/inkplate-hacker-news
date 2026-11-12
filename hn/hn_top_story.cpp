@@ -23,7 +23,7 @@ static char s_hnBestUrlBuf[512];
 
 bool fetchTopStoryLast24h(HNParser &hn, char *title, size_t title_cap, char *meta, size_t meta_cap,
                           char *story_url, size_t story_url_cap, int *out_score, uint32_t *out_time,
-                          unsigned max_item_lookups) {
+                          uint32_t *out_id, unsigned max_item_lookups) {
   const time_t now = time(nullptr);
   if (now < 86400) {
     return false;
@@ -46,6 +46,7 @@ bool fetchTopStoryLast24h(HNParser &hn, char *title, size_t title_cap, char *met
   s_hnBestTitleBuf[0] = '\0';
   s_hnBestUrlBuf[0] = '\0';
   uint32_t best_time = 0;
+  uint32_t best_id = 0;
 
   const size_t n = ids.size();
   const unsigned limit = (max_item_lookups < n) ? max_item_lookups : static_cast<unsigned>(n);
@@ -85,6 +86,7 @@ bool fetchTopStoryLast24h(HNParser &hn, char *title, size_t title_cap, char *met
       snprintf(s_hnBestUrlBuf, sizeof(s_hnBestUrlBuf), "https://news.ycombinator.com/item?id=%d", id);
     }
     best_time = t;
+    best_id = static_cast<uint32_t>(id);
   }
 
   if (best_score < 0 || s_hnBestTitleBuf[0] == '\0') {
@@ -113,5 +115,8 @@ bool fetchTopStoryLast24h(HNParser &hn, char *title, size_t title_cap, char *met
 
   *out_score = best_score;
   *out_time = best_time;
+  if (out_id) {
+    *out_id = best_id;
+  }
   return true;
 }

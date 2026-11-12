@@ -55,6 +55,7 @@ See also `WIFI_TIMEOUT` (defaults to **30 s** in `hn/hn.ino`; override with `-
 ### Other options (inside `hn/hn.ino`)
 
 - **`kCursorModel`** — Cloud Agent model id (default **`claude-sonnet-5-5`**, Claude Sonnet 5.5; list valid ids with `curl -u YOUR_KEY: https://api.cursor.com/v1/models`).
+- **`kCacheSummaries`** — reuse the previous summary while the top story's HN id is unchanged (default **`true`**; set **`false`** to summarize on every wake).
 
 The summary prompt, poll interval, timeout, and agent cleanup (archived after each run) are set in **`hn/summary_client.cpp`**.
 
@@ -85,5 +86,6 @@ Layout (margins, title rule position, summary band, line spacing) is controlled 
 - A summary takes roughly **tens of seconds to a few minutes** (cloud VM start + page fetch); **“Generating summary…”** stays on screen meanwhile.
 - If HN repeatedly fails after **15** attempts, the device shows an error headline and sleeps on the Wi‑Fi retry timer.
 - E‑paper will **refresh twice** when a summary is fetched: once for **“Generating summary…”**, once for the final text.
+- If the top story's HN id matches the previous wake, the cached summary (kept in RTC memory) is reused: no agent call and a single refresh. The cache is lost on power loss, reset, or reflash; failed summaries are not cached.
 - If you see **`#warning`** about **`secrets.h`**, copy **`secrets.example.h`** → **`secrets.h`** and fill in credentials.
 
